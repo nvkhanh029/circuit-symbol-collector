@@ -1,0 +1,10 @@
+# Collected data must never be committed (the repository is public)
+P[1-7]_*.json
+O[1-2]_*.json
+*_main_r*.json
+*_scene_*.json
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.vscode/
