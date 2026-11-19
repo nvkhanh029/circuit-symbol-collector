@@ -1,8 +1,8 @@
-// Circuit Symbol Collector - pieces 1 to 4: start screen, canvas that records strokes,
+// Circuit Symbol Collector - pieces 1 to 6: start screen, canvas that records strokes,
 // random page style, rendered picture, palm rejection (tablet + pen),
 // saving on the device (IndexedDB) and resume, example pictures with show/hide, short guide,
-// progress messages to the Google Sheet (piece 5).
-// Not done yet (later pieces): round 2 switch from the Sheet, scene mode.
+// progress messages to the Google Sheet (piece 5), round 2 switch from the Sheet (piece 6).
+// Not done yet (later piece): scene mode.
 
 "use strict";
 
@@ -48,10 +48,6 @@ const IGNORED_TOUCH_LIMIT = 2;
 // The button of the device message ignores taps for this long after the message appears.
 const MODAL_BUTTON_DELAY_MS = 500;
 
-// Round 2 stays closed until the team lead opens it. For now it is a fixed switch;
-// later it will be read from the Google Sheet (requirements, section 3).
-const ROUND2_OPEN = false;
-
 // Progress to the Google Sheet (requirements, section 10): the address of the Apps Script web app
 // (it ends with /exec). Empty = progress is not sent. This address is not a secret: the browser must
 // know it, so anyone can read it here. The script accepts only valid codes and numbers.
@@ -61,6 +57,12 @@ const PROGRESS_URL = "https://script.google.com/macros/s/AKfycbyLk1tn77mYVjufgIT
 // At most this many wait; when there are more, the oldest are dropped (progress only, never drawings).
 const PROGRESS_QUEUE_MAX = 400;
 const PROGRESS_TIMEOUT_MS = 15000;
+
+// Round 2 switch (requirements, section 3): the page asks the same web app (GET) whether the team lead
+// has typed "open" in the Sheet. The last answer is remembered on the device and used when the
+// web app cannot be reached. Without PROGRESS_URL, round 2 stays closed.
+const ROUND2_KEY = "round2Open";
+const ROUND2_TIMEOUT_MS = 15000;
 
 // ---------------------------------------------------------------- texts (Vietnamese is the default)
 
@@ -263,6 +265,7 @@ let pendingSaves = 0;        // saves that are not finished yet
 let saveQueue = Promise.resolve();    // saves run one after another, in order
 let storageReady = Promise.resolve(); // resolved when the database is open and the start screen is pre-filled
 let savedMeta = null;        // saved session of the person + round chosen on the start screen
+let savedRound2 = false;     // the chosen person has a round 2 session saved on this device
 let refreshToken = 0;        // so that an old lookup cannot overwrite a newer one
 
 function sessionKey(person, round) { return person + "_r" + round; }
@@ -353,12 +356,23 @@ function updateStorageNotes() {
 }
 
 // Start screen: is there a saved session for the chosen person + round?
+// It also checks whether the person has a saved round 2 session: that one can always continue,
+// even if the team lead has closed round 2 again (user, 20 Nov).
 async function refreshSelection() {
   const token = ++refreshToken;
   const person = $("person-select").value;
+  let r2 = null;
+  if (db && person) {
+    try { r2 = await getSessionRecord(sessionKey(person, 2)); } catch (e) { r2 = null; }
+  }
+  if (token !== refreshToken) return;
+  savedRound2 = !!r2;
+  updateRoundOption();                     // may move the choice back to round 1
   const round = $("round-select").value;
   let meta = null;
-  if (db && person) {
+  if (round === "2") {
+    meta = r2;
+  } else if (db && person) {
     try { meta = await getSessionRecord(sessionKey(person, round)); } catch (e) { meta = null; }
   }
   if (token !== refreshToken) return;
@@ -379,7 +393,7 @@ function initStorage() {
         if (last && !$("person-select").value) {          // pre-fill with the last choice
           if (PERSON_CODES.includes(last.person)) $("person-select").value = last.person;
           if (DEVICE_PAIRS.includes(last.devicePair)) $("device-select").value = last.devicePair;
-          $("round-select").value = (last.round === 2 && !ROUND2_OPEN) ? "1" : String(last.round);
+          $("round-select").value = String(last.round);   // refreshSelection moves it back to 1 if round 2 is not allowed
         }
         await refreshSelection();
       } catch (e) { /* the start screen stays empty */ }
@@ -457,6 +471,48 @@ async function sendProgress() {
 
 window.addEventListener("online", sendProgress);
 
+// ---------------------------------------------------------------- round 2 switch from the Sheet
+
+// The last answer of the web app, remembered on the device (closed by default).
+let round2Open = false;
+try { round2Open = localStorage.getItem(ROUND2_KEY) === "true"; } catch (e) { /* keep closed */ }
+let round2Checking = false;
+
+// Round 2 can be chosen when the team lead has opened it, or when the chosen person already has
+// a round 2 session saved on this device.
+function round2Allowed() { return round2Open || savedRound2; }
+
+// Ask the web app. If it cannot be reached or answers something unexpected, the last answer stays.
+async function checkRound2() {
+  if (!PROGRESS_URL || round2Checking) return;
+  if (navigator.onLine === false) return;            // the "online" event asks again later
+  round2Checking = true;
+  const controller = window.AbortController ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), ROUND2_TIMEOUT_MS) : null;
+  try {
+    // A simple GET: no CORS preflight check is needed.
+    const res = await fetch(PROGRESS_URL + "?q=round2", {
+      method: "GET",
+      redirect: "follow",
+      cache: "no-store",
+      signal: controller ? controller.signal : undefined,
+    });
+    const answer = await res.json();
+    if (answer && answer.ok === true && typeof answer.round2_open === "boolean") {
+      round2Open = answer.round2_open;
+      try { localStorage.setItem(ROUND2_KEY, String(round2Open)); } catch (e) { /* ignore */ }
+      refreshSelection();                            // updates the round list and the start button
+    }
+  } catch (e) {
+    /* keep the last answer */
+  } finally {
+    if (timer) clearTimeout(timer);
+    round2Checking = false;
+  }
+}
+
+window.addEventListener("online", checkRound2);
+
 // ---------------------------------------------------------------- texts on screen
 
 function applyLanguage() {
@@ -490,12 +546,19 @@ function fillSelects() {
   const round = $("round-select").value || "1";
   $("round-select").innerHTML = "";
   $("round-select").add(new Option("1", "1"));
-  const r2 = new Option("2", "2");
-  r2.disabled = !ROUND2_OPEN;
-  $("round-select").add(r2);
+  $("round-select").add(new Option("2", "2"));
   $("round-select").value = round;
-  $("round-note").classList.toggle("hidden", ROUND2_OPEN);
+  updateRoundOption();
   updateStartButton();
+}
+
+// Round 2 in the list: enabled only when it is allowed. If it is chosen but not allowed, go back to 1.
+function updateRoundOption() {
+  const allowed = round2Allowed();
+  const select = $("round-select");
+  if (select.options.length > 1) select.options[1].disabled = !allowed;
+  if (!allowed && select.value === "2") select.value = "1";
+  $("round-note").classList.toggle("hidden", allowed);
 }
 
 // Start screen state. A saved session of the chosen person + round locks the device pair
@@ -939,6 +1002,7 @@ async function onStart() {
   const person = $("person-select").value;
   const chosenDevice = $("device-select").value;
   const round = parseInt($("round-select").value, 10);
+  if (round === 2 && !round2Allowed()) return;   // should not happen: the option is disabled
   $("start-btn").disabled = true;          // no double tap while the saved session is loading
 
   // Ask for persistent storage (a user tap is needed in some browsers). The answer is not used.
@@ -1013,3 +1077,4 @@ preloadExamples();
 applyLanguage();
 initStorage();
 sendProgress();   // messages left over from an earlier visit
+checkRound2();    // is round 2 open?
