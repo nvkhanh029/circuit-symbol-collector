@@ -2,11 +2,61 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>Circuit Symbol Collector</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h1>Circuit Symbol Collector</h1>
-  <p>Trang này đang được xây dựng. / This page is under construction.</p>
+
+  <!-- Start screen: choose language, person code, device pair, round -->
+  <main id="start-screen" class="screen">
+    <div class="card">
+      <div class="row between">
+        <h1 data-i18n="title">Circuit Symbol Collector</h1>
+        <button id="lang-btn" type="button" class="small">EN</button>
+      </div>
+
+      <label>
+        <span data-i18n="person_code">Person code</span>
+        <select id="person-select"></select>
+      </label>
+
+      <label>
+        <span data-i18n="device_pair">Device pair</span>
+        <select id="device-select"></select>
+      </label>
+
+      <label>
+        <span data-i18n="round">Round</span>
+        <select id="round-select"></select>
+      </label>
+      <p id="round-note" class="note" data-i18n="round2_locked">Round 2 is not open yet.</p>
+
+      <button id="start-btn" type="button" class="primary" data-i18n="start">Start</button>
+    </div>
+  </main>
+
+  <!-- Drawing screen -->
+  <main id="draw-screen" class="screen hidden">
+    <header class="topbar">
+      <div id="progress" class="progress">1 / 165</div>
+      <div class="label-box">
+        <span data-i18n="draw_this">Draw:</span>
+        <strong id="symbol-label"></strong>
+      </div>
+    </header>
+
+    <div id="canvas-wrap" class="canvas-wrap">
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <footer class="buttons">
+      <button id="clear-btn" type="button" data-i18n="clear">Clear</button>
+      <button id="download-btn" type="button" data-i18n="download">Download</button>
+      <button id="next-btn" type="button" class="primary" data-i18n="next" disabled>Next</button>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
 </body>
 </html>
