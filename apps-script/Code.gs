@@ -7,6 +7,10 @@
 // Invalid messages (wrong code, wrong numbers) are skipped, because anyone who finds the
 // web app address could send fake rows.
 //
+// The page also asks (GET) whether round 2 is open. The team lead opens it by typing "open"
+// in cell B1 of the tab "settings" (A1 says "round2"). Capital letters and spaces do not matter.
+// Anything else in B1, or no tab "settings", means round 2 is closed.
+//
 // After every change: Deploy > Manage deployments > edit > Version: New version > Deploy.
 
 const SHEET_NAME = "progress";
@@ -44,6 +48,16 @@ function doPost(e) {
   }
   // ok: true also when some messages were skipped, so the page does not send them again and again.
   return answer({ ok: true, written: rows.length, skipped: messages.length - rows.length });
+}
+
+// Round 2 switch. The answer is { ok: true, round2_open: true or false }. This function only reads.
+const SETTINGS_SHEET = "settings";
+const ROUND2_CELL = "B1";
+
+function doGet(e) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SETTINGS_SHEET);
+  const value = sheet ? String(sheet.getRange(ROUND2_CELL).getValue()) : "";
+  return answer({ ok: true, round2_open: value.trim().toLowerCase() === "open" });
 }
 
 function isValid(m) {
