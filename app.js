@@ -15,6 +15,14 @@ const SYMBOLS = [
 const DRAWINGS_PER_SYMBOL = 15;          // per round (docs/collection-page-requirements.md, section 5)
 const TOTAL = SYMBOLS.length * DRAWINGS_PER_SYMBOL;   // 165
 
+// Device check (requirements, section 7): which device pairs fit each stroke device.
+// "unknown" is not listed on purpose: it never triggers a notice.
+const DEVICE_FITS = {
+  mouse: ["laptop_mouse"],
+  stylus: ["tablet_pen"],
+  finger: ["tablet_finger", "laptop_finger", "phone_finger"],
+};
+
 // Round 2 stays closed until the team lead opens it. For now it is a fixed switch;
 // later it will be read from the Google Sheet (requirements, section 3).
 const ROUND2_OPEN = false;
@@ -36,6 +44,7 @@ const TEXT = {
     next: "Tiếp",
     done: "Xong! Hãy tải xuống tệp.",
     leave: "Chưa có lưu trên thiết bị. Nếu rời trang, các hình đã vẽ sẽ mất.",
+    device_mismatch: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy báo cho trưởng nhóm.",
     lang_button: "EN",
     devices: {
       tablet_pen: "Máy tính bảng + bút",
@@ -72,6 +81,7 @@ const TEXT = {
     next: "Next",
     done: "Done! Please download the file.",
     leave: "Nothing is saved on this device yet. If you leave, the drawings will be lost.",
+    device_mismatch: "The drawing device does not match your choice ({device}). If you chose the wrong one, tell the team lead.",
     lang_button: "VI",
     devices: {
       tablet_pen: "Tablet + pen",
@@ -112,6 +122,7 @@ const session = {
 let current = null; // the drawing in progress: { startedAt, t0, canvas, strokes }
 let activeStroke = null;     // the stroke being drawn right now
 let activePointerId = null;  // only one pointer is followed at a time
+let noticeShown = false;     // device check notice visible for the drawing in progress
 
 // ---------------------------------------------------------------- small helpers
 
@@ -155,6 +166,7 @@ function applyLanguage() {
   $("lang-btn").textContent = t.lang_button;
   fillSelects();
   if (!$("draw-screen").classList.contains("hidden")) showLabel();
+  updateNotice();
   updateButtons();
 }
 
@@ -200,6 +212,26 @@ function showLabel() {
   $("progress").textContent = (i + 1) + " / " + TOTAL;
 }
 
+// Shows or hides the device check notice. Text is in the page language.
+function updateNotice() {
+  const el = $("device-notice");
+  el.classList.toggle("hidden", !noticeShown);
+  if (noticeShown) {
+    const t = TEXT[lang];
+    el.textContent = t.device_mismatch.replace("{device}", t.devices[session.devicePair]);
+  }
+}
+
+// Called for every new stroke: does its device fit the chosen device pair?
+function checkDevice(strokeDevice) {
+  const fits = DEVICE_FITS[strokeDevice];
+  if (!fits) return;                       // unknown device: no notice
+  if (!fits.includes(session.devicePair)) {
+    noticeShown = true;
+    updateNotice();
+  }
+}
+
 function updateButtons() {
   const finished = session.drawings.length >= TOTAL;
   const hasInk = !!current && current.strokes.length > 0;
@@ -239,6 +271,8 @@ function newDrawing() {
   current = { startedAt: null, t0: null, canvas: size, strokes: [] };
   activeStroke = null;
   activePointerId = null;
+  noticeShown = false;
+  updateNotice();
   updateButtons();
 }
 
@@ -266,6 +300,7 @@ function onPointerDown(e) {
 
   activeStroke = { device: deviceFromPointerType(e.pointerType), points: [pointFromEvent(e)] };
   current.strokes.push(activeStroke);
+  checkDevice(activeStroke.device);
 
   const p = activeStroke.points[0];
   ctx.beginPath();
@@ -344,6 +379,8 @@ function onNext() {
   } else {
     current = null;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    noticeShown = false;
+    updateNotice();
     updateButtons();
   }
 }
