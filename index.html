@@ -48,8 +48,6 @@
 
     <div id="canvas-wrap" class="canvas-wrap">
       <canvas id="canvas"></canvas>
-      <!-- Device check notice: floats over the canvas, so the canvas size never changes -->
-      <div id="device-notice" class="notice hidden" role="status"></div>
     </div>
 
     <footer class="buttons">
@@ -58,6 +56,14 @@
       <button id="next-btn" type="button" class="primary" data-i18n="next" disabled>Next</button>
     </footer>
   </main>
+
+  <!-- Device check message: big, in the middle of the screen, covers the page -->
+  <div id="device-modal" class="modal hidden" role="alertdialog" aria-modal="true">
+    <div class="modal-box">
+      <p id="modal-text"></p>
+      <button id="modal-btn" type="button" class="primary"></button>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

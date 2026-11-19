@@ -16,12 +16,17 @@ const DRAWINGS_PER_SYMBOL = 15;          // per round (docs/collection-page-requ
 const TOTAL = SYMBOLS.length * DRAWINGS_PER_SYMBOL;   // 165
 
 // Device check (requirements, section 7): which device pairs fit each stroke device.
-// "unknown" is not listed on purpose: it never triggers a notice.
+// "unknown" is not listed on purpose: it never triggers a message.
 const DEVICE_FITS = {
   mouse: ["laptop_mouse"],
   stylus: ["tablet_pen"],
   finger: ["tablet_finger", "laptop_finger", "phone_finger"],
 };
+
+// false = a mismatch only shows a warning that the person can close.
+// true  = before the first drawing is saved, a mismatch stops drawing and the person must reload.
+// Keep it false until all 5 device pairs are tested on real devices (a device may report its input wrongly).
+const DEVICE_CHECK_BLOCKS = false;
 
 // Round 2 stays closed until the team lead opens it. For now it is a fixed switch;
 // later it will be read from the Google Sheet (requirements, section 3).
@@ -44,7 +49,11 @@ const TEXT = {
     next: "Tiếp",
     done: "Xong! Hãy tải xuống tệp.",
     leave: "Chưa có lưu trên thiết bị. Nếu rời trang, các hình đã vẽ sẽ mất.",
-    device_mismatch: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy báo cho trưởng nhóm.",
+    mismatch_block: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Hãy tải lại trang và chọn lại thiết bị.",
+    mismatch_reload: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy tải lại trang và chọn lại.",
+    mismatch_team: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy báo cho trưởng nhóm.",
+    reload: "Tải lại trang",
+    close: "Đóng",
     lang_button: "EN",
     devices: {
       tablet_pen: "Máy tính bảng + bút",
@@ -81,7 +90,11 @@ const TEXT = {
     next: "Next",
     done: "Done! Please download the file.",
     leave: "Nothing is saved on this device yet. If you leave, the drawings will be lost.",
-    device_mismatch: "The drawing device does not match your choice ({device}). If you chose the wrong one, tell the team lead.",
+    mismatch_block: "The drawing device does not match your choice ({device}). Please reload the page and choose your device again.",
+    mismatch_reload: "The drawing device does not match your choice ({device}). If you chose the wrong one, reload the page and choose again.",
+    mismatch_team: "The drawing device does not match your choice ({device}). If you chose the wrong one, tell the team lead.",
+    reload: "Reload page",
+    close: "Close",
     lang_button: "VI",
     devices: {
       tablet_pen: "Tablet + pen",
@@ -122,7 +135,7 @@ const session = {
 let current = null; // the drawing in progress: { startedAt, t0, canvas, strokes }
 let activeStroke = null;     // the stroke being drawn right now
 let activePointerId = null;  // only one pointer is followed at a time
-let noticeShown = false;     // device check notice visible for the drawing in progress
+let warnedThisSession = false;   // the closable device warning is shown at most once per session
 
 // ---------------------------------------------------------------- small helpers
 
@@ -166,7 +179,6 @@ function applyLanguage() {
   $("lang-btn").textContent = t.lang_button;
   fillSelects();
   if (!$("draw-screen").classList.contains("hidden")) showLabel();
-  updateNotice();
   updateButtons();
 }
 
@@ -212,28 +224,49 @@ function showLabel() {
   $("progress").textContent = (i + 1) + " / " + TOTAL;
 }
 
-// Shows or hides the device check notice. Text is in the page language.
-function updateNotice() {
-  const el = $("device-notice");
-  el.classList.toggle("hidden", !noticeShown);
-  if (noticeShown) {
-    const t = TEXT[lang];
-    el.textContent = t.device_mismatch.replace("{device}", t.devices[session.devicePair]);
-  }
-}
+// ---------------------------------------------------------------- device check
 
 // Does this stroke device NOT fit the chosen device pair?
 function deviceMismatch(strokeDevice) {
   const fits = DEVICE_FITS[strokeDevice];
-  if (!fits) return false;                 // unknown device: no notice
+  if (!fits) return false;                 // unknown device: no message
   return !fits.includes(session.devicePair);
 }
 
-// Called for every new stroke.
-function checkDevice(strokeDevice) {
-  if (deviceMismatch(strokeDevice)) {
-    noticeShown = true;
-    updateNotice();
+// Big message in the middle of the screen, in the page language.
+// textKey: which text to show. canClose: true = Close button, false = Reload button only.
+function showDeviceModal(textKey, canClose) {
+  const t = TEXT[lang];
+  $("modal-text").textContent = t[textKey].replace("{device}", t.devices[session.devicePair]);
+  const btn = $("modal-btn");
+  btn.textContent = canClose ? t.close : t.reload;
+  btn.onclick = canClose ? hideDeviceModal : () => location.reload();
+  $("device-modal").classList.remove("hidden");
+}
+
+function hideDeviceModal() {
+  $("device-modal").classList.add("hidden");
+}
+
+// Called when a stroke has ended (never during the stroke, so the line stays visible).
+function handleDeviceMismatch(stroke) {
+  const noDrawingSaved = session.drawings.length === 0;
+
+  if (DEVICE_CHECK_BLOCKS && noDrawingSaved) {
+    // Stop: the wrong stroke is not kept, and the person must reload and choose again.
+    const i = current.strokes.indexOf(stroke);
+    if (i >= 0) current.strokes.splice(i, 1);
+    if (current.strokes.length === 0) { current.t0 = null; current.startedAt = null; }
+    redrawAll();
+    updateButtons();
+    showDeviceModal("mismatch_block", false);
+    return;
+  }
+
+  // Warning: the stroke is kept. Shown once per session.
+  if (!warnedThisSession) {
+    warnedThisSession = true;
+    showDeviceModal(noDrawingSaved ? "mismatch_reload" : "mismatch_team", true);
   }
 }
 
@@ -276,8 +309,6 @@ function newDrawing() {
   current = { startedAt: null, t0: null, canvas: size, strokes: [], undoCount: 0 };
   activeStroke = null;
   activePointerId = null;
-  noticeShown = false;
-  updateNotice();
   updateButtons();
 }
 
@@ -305,7 +336,6 @@ function onPointerDown(e) {
 
   activeStroke = { device: deviceFromPointerType(e.pointerType), points: [pointFromEvent(e)] };
   current.strokes.push(activeStroke);
-  checkDevice(activeStroke.device);
 
   const p = activeStroke.points[0];
   ctx.beginPath();
@@ -341,8 +371,10 @@ function onPointerEnd(e) {
       ctx.stroke();
     }
   }
+  const finished = activeStroke;
   activeStroke = null;
   activePointerId = null;
+  if (finished && deviceMismatch(finished.device)) handleDeviceMismatch(finished);
 }
 
 canvas.addEventListener("pointerdown", onPointerDown);
@@ -385,8 +417,6 @@ function onNext() {
   } else {
     current = null;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    noticeShown = false;
-    updateNotice();
     updateButtons();
   }
 }
@@ -416,8 +446,6 @@ function onUndo() {
     current.startedAt = null;
   }
   redrawAll();
-  noticeShown = current.strokes.some((s) => deviceMismatch(s.device));
-  updateNotice();
   updateButtons();
 }
 
@@ -450,6 +478,8 @@ function onStart() {
     SYMBOLS.flatMap((s) => Array.from({ length: DRAWINGS_PER_SYMBOL }, () => s))
   );
   session.drawings = [];
+  warnedThisSession = false;
+  hideDeviceModal();
   $("start-screen").classList.add("hidden");
   $("draw-screen").classList.remove("hidden");
   showLabel();
