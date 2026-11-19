@@ -46,6 +46,23 @@ html, body {
 .row { display: flex; align-items: center; gap: 8px; }
 .between { justify-content: space-between; }
 .note { margin: 0; font-size: 0.85rem; color: #6b7280; }
+.note.warn { color: #b45309; }
+
+/* Shown on top of the drawing area when saving on the device does not work.
+   It does not catch touches, so drawing still works under it. */
+.save-note {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 5;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #f59e0b;
+  background: #fef3c7;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
 
 select, button {
   font: inherit;

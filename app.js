@@ -1,7 +1,7 @@
-// Circuit Symbol Collector - pieces 1 and 2: start screen, canvas that records strokes,
-// random page style, rendered picture, example_shown, palm rejection (tablet + pen).
-// Not done yet (later pieces): example pictures, guide, saving on the device (resume),
-// progress to Google Sheet, scene mode.
+// Circuit Symbol Collector - pieces 1 to 3: start screen, canvas that records strokes,
+// random page style, rendered picture, example_shown, palm rejection (tablet + pen),
+// saving on the device (IndexedDB) and resume.
+// Not done yet (later pieces): example pictures, guide, progress to Google Sheet, scene mode.
 
 "use strict";
 
@@ -64,7 +64,10 @@ const TEXT = {
     download: "Tải xuống",
     next: "Tiếp",
     done: "Xong! Hãy tải xuống tệp.",
-    leave: "Chưa có lưu trên thiết bị. Nếu rời trang, các hình đã vẽ sẽ mất.",
+    leave: "Hình vẽ chưa được lưu xong trên thiết bị. Nếu rời trang, chúng có thể bị mất.",
+    continue: "Tiếp tục",
+    resume_note: "Đã lưu trên thiết bị này: {n} / {total}. Không thể đổi thiết bị.",
+    save_failed: "Không lưu được trên thiết bị này (có thể do chế độ riêng tư). Nếu đóng trang, các hình đã vẽ sẽ mất. Hãy tải xuống thường xuyên.",
     mismatch_block: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Hãy tải lại trang và chọn lại thiết bị.",
     mismatch_reload: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy tải lại trang và chọn lại.",
     mismatch_team: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy báo cho trưởng nhóm.",
@@ -107,7 +110,10 @@ const TEXT = {
     download: "Download",
     next: "Next",
     done: "Done! Please download the file.",
-    leave: "Nothing is saved on this device yet. If you leave, the drawings will be lost.",
+    leave: "Your drawings are not saved on this device yet. If you leave now, they may be lost.",
+    continue: "Continue",
+    resume_note: "Saved on this device: {n} / {total}. The device pair cannot be changed.",
+    save_failed: "Saving on this device does not work (maybe private mode). If you close the page, your drawings are lost. Please download often.",
     mismatch_block: "The drawing device does not match your choice ({device}). Please reload the page and choose your device again.",
     mismatch_reload: "The drawing device does not match your choice ({device}). If you chose the wrong one, reload the page and choose again.",
     mismatch_team: "The drawing device does not match your choice ({device}). If you chose the wrong one, tell the team lead.",
@@ -197,6 +203,146 @@ function deviceFromPointerType(type) {
   return "unknown";
 }
 
+// ---------------------------------------------------------------- saving on the device (IndexedDB)
+
+// Two stores. "sessions" has one small record per person + round (device pair, order of the symbols,
+// number of saved drawings) and the record "__last" (last choice, used to pre-fill the start screen).
+// "drawings" has one record per saved drawing. After each drawing only that drawing is written,
+// together with the session record, in one transaction (all or nothing).
+const DB_NAME = "circuit-symbol-collector";
+const STORE_SESSIONS = "sessions";
+const STORE_DRAWINGS = "drawings";
+const LAST_KEY = "__last";
+
+let db = null;               // null = saving on the device does not work
+let storageOk = true;        // false after a failed save: no more saving, the person is warned
+let pendingSaves = 0;        // saves that are not finished yet
+let saveQueue = Promise.resolve();    // saves run one after another, in order
+let storageReady = Promise.resolve(); // resolved when the database is open and the start screen is pre-filled
+let savedMeta = null;        // saved session of the person + round chosen on the start screen
+let refreshToken = 0;        // so that an old lookup cannot overwrite a newer one
+
+function sessionKey(person, round) { return person + "_r" + round; }
+
+function requestToPromise(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function transactionDone(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("aborted"));
+  });
+}
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) { reject(new Error("no IndexedDB")); return; }
+    let req;
+    try { req = indexedDB.open(DB_NAME, 1); } catch (e) { reject(e); return; }
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(STORE_SESSIONS, { keyPath: "key" });
+      req.result.createObjectStore(STORE_DRAWINGS, { keyPath: "id" });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function timeoutAfter(ms) {
+  return new Promise((resolve, reject) => setTimeout(() => reject(new Error("timeout")), ms));
+}
+
+function getSessionRecord(key) {
+  return requestToPromise(db.transaction(STORE_SESSIONS).objectStore(STORE_SESSIONS).get(key));
+}
+
+// The saved session of one person + round: its record and all its drawings, in order.
+async function loadSession(key) {
+  const tx = db.transaction([STORE_SESSIONS, STORE_DRAWINGS]);
+  const range = IDBKeyRange.bound(key + "_", key + "_￿");   // ids look like P1_r1_0001
+  const [meta, drawings] = await Promise.all([
+    requestToPromise(tx.objectStore(STORE_SESSIONS).get(key)),
+    requestToPromise(tx.objectStore(STORE_DRAWINGS).getAll(range)),
+  ]);
+  if (!meta) return null;
+  drawings.sort((a, b) => (a.id < b.id ? -1 : 1));
+  return { meta: meta, drawings: drawings };
+}
+
+// Called after a drawing is added to session.drawings. The person does not wait for it.
+function persistDrawing(drawing) {
+  if (!db || !storageOk) return;
+  const meta = {
+    key: sessionKey(session.person, session.round),
+    mode: "main",
+    person: session.person,
+    devicePair: session.devicePair,
+    round: session.round,
+    order: session.order,
+    count: session.drawings.length,
+    updatedAt: toLocalISO(new Date()),
+  };
+  const last = { key: LAST_KEY, person: session.person, devicePair: session.devicePair, round: session.round };
+  pendingSaves++;
+  saveQueue = saveQueue.then(async () => {
+    const tx = db.transaction([STORE_SESSIONS, STORE_DRAWINGS], "readwrite");
+    tx.objectStore(STORE_DRAWINGS).put(drawing);
+    tx.objectStore(STORE_SESSIONS).put(meta);
+    tx.objectStore(STORE_SESSIONS).put(last);
+    await transactionDone(tx);
+  }).catch(() => {
+    storageOk = false;           // for example the storage is full: stop saving, warn the person
+    updateStorageNotes();
+  }).finally(() => { pendingSaves--; });
+}
+
+function updateStorageNotes() {
+  const text = TEXT[lang].save_failed;
+  $("storage-note").textContent = text;
+  $("save-note").textContent = text;
+  $("storage-note").classList.toggle("hidden", storageOk);
+  $("save-note").classList.toggle("hidden", storageOk);
+}
+
+// Start screen: is there a saved session for the chosen person + round?
+async function refreshSelection() {
+  const token = ++refreshToken;
+  const person = $("person-select").value;
+  const round = $("round-select").value;
+  let meta = null;
+  if (db && person) {
+    try { meta = await getSessionRecord(sessionKey(person, round)); } catch (e) { meta = null; }
+  }
+  if (token !== refreshToken) return;
+  if (!meta && savedMeta) $("device-select").value = "";   // do not keep the locked device of another session
+  savedMeta = meta || null;
+  updateStartButton();
+}
+
+function initStorage() {
+  storageReady = Promise.race([openDb(), timeoutAfter(4000)])
+    .then((d) => { db = d; })
+    .catch(() => { db = null; storageOk = false; })
+    .then(async () => {
+      updateStorageNotes();
+      if (!db) return;
+      try {
+        const last = await getSessionRecord(LAST_KEY);
+        if (last && !$("person-select").value) {          // pre-fill with the last choice
+          if (PERSON_CODES.includes(last.person)) $("person-select").value = last.person;
+          if (DEVICE_PAIRS.includes(last.devicePair)) $("device-select").value = last.devicePair;
+          $("round-select").value = (last.round === 2 && !ROUND2_OPEN) ? "1" : String(last.round);
+        }
+        await refreshSelection();
+      } catch (e) { /* the start screen stays empty */ }
+    });
+}
+
 // ---------------------------------------------------------------- texts on screen
 
 function applyLanguage() {
@@ -205,6 +351,7 @@ function applyLanguage() {
   document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t[el.dataset.i18n]; });
   $("lang-btn").textContent = t.lang_button;
   fillSelects();
+  updateStorageNotes();
   if (!$("draw-screen").classList.contains("hidden")) showLabel();
   updateButtons();
 }
@@ -235,8 +382,22 @@ function fillSelects() {
   updateStartButton();
 }
 
+// Start screen state. A saved session of the chosen person + round locks the device pair
+// and turns Start into Continue.
 function updateStartButton() {
-  $("start-btn").disabled = !($("person-select").value && $("device-select").value);
+  const t = TEXT[lang];
+  const device = $("device-select");
+  if (savedMeta) {
+    device.value = savedMeta.devicePair;
+    device.disabled = true;
+  } else {
+    device.disabled = false;
+  }
+  $("start-btn").disabled = !($("person-select").value && device.value);
+  $("start-btn").textContent = savedMeta ? t.continue : t.start;
+  const note = $("resume-note");
+  note.classList.toggle("hidden", !savedMeta);
+  if (savedMeta) note.textContent = t.resume_note.replace("{n}", savedMeta.count).replace("{total}", TOTAL);
 }
 
 function showLabel() {
@@ -486,7 +647,7 @@ window.addEventListener("resize", () => {
 
 function saveDrawing() {
   const i = session.drawings.length;
-  session.drawings.push({
+  const drawing = {
     id: session.person + "_r" + session.round + "_" + pad(i + 1, 4),
     person: session.person,
     round: session.round,
@@ -499,7 +660,9 @@ function saveDrawing() {
     undo_count: current.undoCount,
     strokes: current.strokes,
     image: renderImage(current.canvas, current.strokes),
-  });
+  };
+  session.drawings.push(drawing);
+  persistDrawing(drawing);
 }
 
 // The saved picture: only the strokes, black on white, at the canvas size (scale 1).
@@ -584,14 +747,34 @@ function onDownload() {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-function onStart() {
-  session.person = $("person-select").value;
-  session.devicePair = $("device-select").value;
-  session.round = parseInt($("round-select").value, 10);
-  session.order = shuffle(
-    SYMBOLS.flatMap((s) => Array.from({ length: DRAWINGS_PER_SYMBOL }, () => s))
-  );
-  session.drawings = [];
+async function onStart() {
+  const person = $("person-select").value;
+  const chosenDevice = $("device-select").value;
+  const round = parseInt($("round-select").value, 10);
+  $("start-btn").disabled = true;          // no double tap while the saved session is loading
+
+  // Ask for persistent storage (a user tap is needed in some browsers). The answer is not used.
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) { /* ignore */ }
+
+  await storageReady;
+  let saved = null;
+  if (db) {
+    try { saved = await loadSession(sessionKey(person, round)); } catch (e) { storageOk = false; updateStorageNotes(); }
+  }
+
+  session.person = person;
+  session.round = round;
+  if (saved) {                              // continue: the device pair and the order are the saved ones
+    session.devicePair = saved.meta.devicePair;
+    session.order = saved.meta.order;
+    session.drawings = saved.drawings;
+  } else {
+    session.devicePair = chosenDevice;
+    session.order = shuffle(
+      SYMBOLS.flatMap((s) => Array.from({ length: DRAWINGS_PER_SYMBOL }, () => s))
+    );
+    session.drawings = [];
+  }
   warnedThisSession = false;
   penSeen = false;
   ignoredTouchRun = 0;
@@ -600,12 +783,19 @@ function onStart() {
   $("start-screen").classList.add("hidden");
   $("draw-screen").classList.remove("hidden");
   showLabel();
-  newDrawing();
+  if (session.drawings.length < TOTAL) {
+    newDrawing();
+  } else {                                  // this round is already finished: only Download is possible
+    current = null;
+    setPageStyle("blank");
+    updateButtons();
+  }
 }
 
-// Nothing is saved on the device yet, so warn before leaving with drawings in memory.
+// Warn before leaving while a save is not finished, or when saving on the device does not work.
 window.addEventListener("beforeunload", (e) => {
-  if (session.drawings.length > 0) {
+  const notSaved = pendingSaves > 0 || (!storageOk && session.drawings.length > 0);
+  if (notSaved) {
     e.preventDefault();
     e.returnValue = TEXT[lang].leave;
   }
@@ -616,7 +806,8 @@ $("lang-btn").addEventListener("click", () => {
   try { localStorage.setItem("lang", lang); } catch (e) { /* ignore */ }
   applyLanguage();
 });
-$("person-select").addEventListener("change", updateStartButton);
+$("person-select").addEventListener("change", refreshSelection);
+$("round-select").addEventListener("change", refreshSelection);
 $("device-select").addEventListener("change", updateStartButton);
 $("start-btn").addEventListener("click", onStart);
 $("next-btn").addEventListener("click", onNext);
@@ -624,3 +815,4 @@ $("undo-btn").addEventListener("click", onUndo);
 $("download-btn").addEventListener("click", onDownload);
 
 applyLanguage();
+initStorage();
