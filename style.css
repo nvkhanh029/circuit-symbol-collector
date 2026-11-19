@@ -132,6 +132,24 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   cursor: crosshair;
 }
 
+/* Page styles (blank, lined, dotted). They are only a CSS background of the canvas element,
+   so they are never in the canvas pixels, never in the strokes and never in the saved picture.
+   --page-gap is the spacing in screen pixels; adjust it after the device tests (requirements, section 7). */
+#canvas {
+  --page-gap: 32px;
+  --page-ink: #cbd5e1;                 /* light grey, so the black strokes stay clear */
+}
+
+#canvas.page-lined {
+  background-image: linear-gradient(to bottom, transparent calc(100% - 1px), var(--page-ink) calc(100% - 1px));
+  background-size: 100% var(--page-gap);
+}
+
+#canvas.page-dotted {
+  background-image: radial-gradient(circle, var(--page-ink) 1.6px, transparent 2.2px);
+  background-size: var(--page-gap) var(--page-gap);
+}
+
 .buttons {
   display: flex;
   gap: 8px;

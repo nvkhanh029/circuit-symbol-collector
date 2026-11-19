@@ -1,6 +1,7 @@
-// Circuit Symbol Collector - piece 1: start screen + canvas that records strokes.
-// Not done yet (later pieces): page styles, example pictures, guide, rendered image,
-// saving on the device (resume), progress to Google Sheet, scene mode.
+// Circuit Symbol Collector - pieces 1 and 2: start screen, canvas that records strokes,
+// random page style, rendered picture, example_shown.
+// Not done yet (later pieces): example pictures, guide, saving on the device (resume),
+// progress to Google Sheet, scene mode.
 
 "use strict";
 
@@ -14,6 +15,13 @@ const SYMBOLS = [
 ];
 const DRAWINGS_PER_SYMBOL = 15;          // per round (docs/collection-page-requirements.md, section 5)
 const TOTAL = SYMBOLS.length * DRAWINGS_PER_SYMBOL;   // 165
+
+// Page styles (requirements, section 5). The CSS classes are "page-" + name (see style.css).
+const PAGE_STYLES = ["blank", "lined", "dotted"];
+
+// Pen look. The same values are used on the screen and in the saved picture.
+const INK_WIDTH = 3;
+const INK_COLOR = "#111827";
 
 // Device check (requirements, section 7): which device pairs fit each stroke device.
 // "unknown" is not listed on purpose: it never triggers a message.
@@ -136,6 +144,10 @@ let current = null; // the drawing in progress: { startedAt, t0, canvas, strokes
 let activeStroke = null;     // the stroke being drawn right now
 let activePointerId = null;  // only one pointer is followed at a time
 let warnedThisSession = false;   // the closable device warning is shown at most once per session
+
+// Is the example picture on screen? There are no example pictures yet, so it is always false.
+// The piece with the example pictures and the show/hide button will set this value.
+let exampleShown = false;
 
 // ---------------------------------------------------------------- small helpers
 
@@ -296,17 +308,33 @@ function setupCanvas() {
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.lineWidth = 3;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = "#111827";
-  ctx.fillStyle = "#111827";
+  setInk(ctx);
   return { width: w, height: h };
 }
 
-function newDrawing() {
+function setInk(c) {
+  c.lineWidth = INK_WIDTH;
+  c.lineCap = "round";
+  c.lineJoin = "round";
+  c.strokeStyle = INK_COLOR;
+  c.fillStyle = INK_COLOR;
+}
+
+// Page style: a CSS class on the canvas element. It is not drawn into the canvas pixels.
+function setPageStyle(style) {
+  PAGE_STYLES.forEach((s) => canvas.classList.toggle("page-" + s, s === style));
+}
+
+function randomPageStyle() {
+  return PAGE_STYLES[Math.floor(Math.random() * PAGE_STYLES.length)];
+}
+
+// keepStyle: true when the same drawing is only fitted again (window resize), so the style does not change.
+function newDrawing(keepStyle) {
   const size = setupCanvas();
-  current = { startedAt: null, t0: null, canvas: size, strokes: [], undoCount: 0 };
+  const pageStyle = keepStyle && current ? current.pageStyle : randomPageStyle();
+  setPageStyle(pageStyle);
+  current = { startedAt: null, t0: null, canvas: size, pageStyle: pageStyle, strokes: [], undoCount: 0 };
   activeStroke = null;
   activePointerId = null;
   updateButtons();
@@ -387,7 +415,7 @@ document.addEventListener("gesturestart", (e) => e.preventDefault());   // iOS p
 // If the window changes size before the first stroke, fit the canvas again.
 window.addEventListener("resize", () => {
   if ($("draw-screen").classList.contains("hidden")) return;
-  if (current && current.strokes.length === 0) newDrawing();
+  if (current && current.strokes.length === 0) newDrawing(true);
 });
 
 // ---------------------------------------------------------------- buttons
@@ -402,10 +430,27 @@ function saveDrawing() {
     label: session.order[i],
     started_at: current.startedAt,
     canvas: current.canvas,
+    page_style: current.pageStyle,
+    example_shown: exampleShown,
     undo_count: current.undoCount,
     strokes: current.strokes,
-    // Later pieces add: page_style, example_shown, image.
+    image: renderImage(current.canvas, current.strokes),
   });
+}
+
+// The saved picture: only the strokes, black on white, at the canvas size (scale 1).
+// The page style is not drawn into it. It is made from the final strokes, so it always
+// matches what is left after Undo.
+function renderImage(size, strokes) {
+  const off = document.createElement("canvas");
+  off.width = size.width;
+  off.height = size.height;
+  const c = off.getContext("2d");
+  c.fillStyle = "#fff";
+  c.fillRect(0, 0, off.width, off.height);
+  setInk(c);
+  drawStrokes(c, strokes);
+  return off.toDataURL("image/png");
 }
 
 function onNext() {
@@ -421,19 +466,24 @@ function onNext() {
   }
 }
 
+// Draw strokes on a canvas context (the ink look must already be set with setInk).
+function drawStrokes(c, strokes) {
+  for (const s of strokes) {
+    const pts = s.points;
+    c.beginPath();
+    c.arc(pts[0][0], pts[0][1], c.lineWidth / 2, 0, Math.PI * 2);   // a dot, so a single tap is visible
+    c.fill();
+    c.beginPath();
+    c.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
+    c.stroke();
+  }
+}
+
 // Draw all remaining strokes again (used after Undo).
 function redrawAll() {
   ctx.clearRect(0, 0, current.canvas.width, current.canvas.height);
-  for (const s of current.strokes) {
-    const pts = s.points;
-    ctx.beginPath();
-    ctx.arc(pts[0][0], pts[0][1], ctx.lineWidth / 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-    ctx.stroke();
-  }
+  drawStrokes(ctx, current.strokes);
 }
 
 // Undo removes the last stroke. It is not saved. Times of the other strokes stay as recorded.
