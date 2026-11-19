@@ -1,7 +1,8 @@
 // Circuit Symbol Collector - pieces 1 to 4: start screen, canvas that records strokes,
 // random page style, rendered picture, palm rejection (tablet + pen),
-// saving on the device (IndexedDB) and resume, example pictures with show/hide, short guide.
-// Not done yet (later pieces): progress to Google Sheet, round 2 switch from the Sheet, scene mode.
+// saving on the device (IndexedDB) and resume, example pictures with show/hide, short guide,
+// progress messages to the Google Sheet (piece 5).
+// Not done yet (later pieces): round 2 switch from the Sheet, scene mode.
 
 "use strict";
 
@@ -50,6 +51,16 @@ const MODAL_BUTTON_DELAY_MS = 500;
 // Round 2 stays closed until the team lead opens it. For now it is a fixed switch;
 // later it will be read from the Google Sheet (requirements, section 3).
 const ROUND2_OPEN = false;
+
+// Progress to the Google Sheet (requirements, section 10): the address of the Apps Script web app
+// (it ends with /exec). Empty = progress is not sent. This address is not a secret: the browser must
+// know it, so anyone can read it here. The script accepts only valid codes and numbers.
+const PROGRESS_URL = "https://script.google.com/macros/s/AKfycbyLk1tn77mYVjufgITnQcaPbB_qm354bvj_BfzsVMZkgylDnrgLJKGnMgnGbiAI4GAR/exec";
+
+// A message that could not be sent waits on the device and is sent again later.
+// At most this many wait; when there are more, the oldest are dropped (progress only, never drawings).
+const PROGRESS_QUEUE_MAX = 400;
+const PROGRESS_TIMEOUT_MS = 15000;
 
 // ---------------------------------------------------------------- texts (Vietnamese is the default)
 
@@ -374,6 +385,77 @@ function initStorage() {
       } catch (e) { /* the start screen stays empty */ }
     });
 }
+
+// ---------------------------------------------------------------- progress to the Google Sheet
+
+// After every saved drawing, a small message (person code, mode, round, count, time; never drawings
+// or names) goes into a waiting list. The list is sent to the Apps Script web app, which adds one row
+// per message to the Sheet. If sending fails (no internet, Google down), the list stays on the device
+// (localStorage) and is sent again: after the next drawing, when the internet comes back, or when
+// the page is opened again. Sending never blocks drawing and never shows a message.
+const PROGRESS_QUEUE_KEY = "progressQueue";
+let progressQueue = [];
+let progressSending = false;
+
+try {
+  const q = JSON.parse(localStorage.getItem(PROGRESS_QUEUE_KEY) || "[]");
+  if (Array.isArray(q)) progressQueue = q;
+} catch (e) { progressQueue = []; }   // storage blocked: the list lives in memory only
+
+function storeProgressQueue() {
+  try { localStorage.setItem(PROGRESS_QUEUE_KEY, JSON.stringify(progressQueue)); } catch (e) { /* ignore */ }
+}
+
+function queueProgress() {
+  if (!PROGRESS_URL) return;
+  progressQueue.push({
+    person: session.person,
+    mode: "main",
+    round: session.round,
+    count: session.drawings.length,
+    total: TOTAL,
+    time: toLocalISO(new Date()),
+  });
+  if (progressQueue.length > PROGRESS_QUEUE_MAX) progressQueue = progressQueue.slice(-PROGRESS_QUEUE_MAX);
+  storeProgressQueue();
+  sendProgress();
+}
+
+// Send the whole waiting list in one request. Only one request runs at a time.
+async function sendProgress() {
+  if (!PROGRESS_URL || progressSending || progressQueue.length === 0) return;
+  if (navigator.onLine === false) return;            // the "online" event sends it later
+  progressSending = true;
+  const batch = progressQueue.slice();
+  const controller = window.AbortController ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), PROGRESS_TIMEOUT_MS) : null;
+  let ok = false;
+  try {
+    // text/plain, not application/json: Apps Script does not answer the browser's CORS preflight check.
+    const res = await fetch(PROGRESS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ messages: batch }),
+      redirect: "follow",
+      signal: controller ? controller.signal : undefined,
+    });
+    const answer = await res.json();
+    ok = !!answer && answer.ok === true;
+  } catch (e) {
+    ok = false;                                       // try again later
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  if (ok) {
+    // Remove only the messages that were sent; new ones may have arrived during the request.
+    progressQueue = progressQueue.slice(batch.length);
+    storeProgressQueue();
+  }
+  progressSending = false;
+  if (ok && progressQueue.length > 0) sendProgress();
+}
+
+window.addEventListener("online", sendProgress);
 
 // ---------------------------------------------------------------- texts on screen
 
@@ -767,6 +849,7 @@ function saveDrawing() {
   };
   session.drawings.push(drawing);
   persistDrawing(drawing);
+  queueProgress();
 }
 
 // The saved picture: only the strokes, black on white, at the canvas size (scale 1).
@@ -929,3 +1012,4 @@ $("guide-ok").addEventListener("click", closeGuide);
 preloadExamples();
 applyLanguage();
 initStorage();
+sendProgress();   // messages left over from an earlier visit
