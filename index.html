@@ -13,7 +13,10 @@
     <div class="card">
       <div class="row between">
         <h1 data-i18n="title">Circuit Symbol Collector</h1>
-        <button id="lang-btn" type="button" class="small">EN</button>
+        <div class="row">
+          <button id="guide-btn-start" type="button" class="small" data-i18n="guide">Guide</button>
+          <button id="lang-btn" type="button" class="small">EN</button>
+        </div>
       </div>
 
       <label>
@@ -41,7 +44,10 @@
   <!-- Drawing screen -->
   <main id="draw-screen" class="screen hidden">
     <header class="topbar">
-      <div id="progress" class="progress">1 / 165</div>
+      <div class="row">
+        <button id="guide-btn" type="button" class="small" data-i18n="guide">Guide</button>
+        <div id="progress" class="progress">1 / 165</div>
+      </div>
       <div class="label-box">
         <span data-i18n="draw_this">Draw:</span>
         <strong id="symbol-label"></strong>
@@ -50,6 +56,12 @@
 
     <div id="canvas-wrap" class="canvas-wrap">
       <canvas id="canvas"></canvas>
+      <!-- Example picture in the top-right corner of the canvas. Touches go through it to the canvas
+           (pointer-events: none); only the show/hide button catches taps. It is never drawn into the canvas. -->
+      <div id="example-box" class="example-box hidden">
+        <button id="example-btn" type="button" class="small"></button>
+        <img id="example-img" alt="" draggable="false">
+      </div>
       <div id="save-note" class="save-note hidden"></div>
     </div>
 
@@ -65,6 +77,16 @@
     <div class="modal-box">
       <p id="modal-text"></p>
       <button id="modal-btn" type="button" class="primary"></button>
+    </div>
+  </div>
+
+  <!-- Short guide (requirements, section 4): before the first drawing of a new round 1 session,
+       and at any time with the Guide button -->
+  <div id="guide-screen" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box guide-box">
+      <h2 data-i18n="guide_title">Guide</h2>
+      <ol id="guide-list"></ol>
+      <button id="guide-ok" type="button" class="primary" data-i18n="guide_ok">OK</button>
     </div>
   </div>
 

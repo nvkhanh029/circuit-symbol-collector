@@ -1,7 +1,7 @@
-// Circuit Symbol Collector - pieces 1 to 3: start screen, canvas that records strokes,
-// random page style, rendered picture, example_shown, palm rejection (tablet + pen),
-// saving on the device (IndexedDB) and resume.
-// Not done yet (later pieces): example pictures, guide, progress to Google Sheet, scene mode.
+// Circuit Symbol Collector - pieces 1 to 4: start screen, canvas that records strokes,
+// random page style, rendered picture, palm rejection (tablet + pen),
+// saving on the device (IndexedDB) and resume, example pictures with show/hide, short guide.
+// Not done yet (later pieces): progress to Google Sheet, round 2 switch from the Sheet, scene mode.
 
 "use strict";
 
@@ -18,6 +18,9 @@ const TOTAL = SYMBOLS.length * DRAWINGS_PER_SYMBOL;   // 165
 
 // Page styles (requirements, section 5). The CSS classes are "page-" + name (see style.css).
 const PAGE_STYLES = ["blank", "lined", "dotted"];
+
+// Example pictures (requirements, section 5): one PNG per label, hand-drawn by the team lead.
+const EXAMPLE_DIR = "examples/";
 
 // Pen look. The same values are used on the screen and in the saved picture.
 const INK_WIDTH = 3;
@@ -76,6 +79,20 @@ const TEXT = {
     reload: "Tải lại trang",
     close: "Đóng",
     lang_button: "EN",
+    guide: "Hướng dẫn",
+    guide_title: "Hướng dẫn",
+    guide_ok: "Đã hiểu",
+    guide_items: [
+      "Bạn vẽ 11 ký hiệu mạch điện cho dự án của nhóm. Mỗi vòng mất khoảng 30 phút (165 hình).",
+      "Chọn mã của bạn (trưởng nhóm đã gửi cho bạn) và thiết bị bạn đang dùng.",
+      "Vẽ ký hiệu được yêu cầu, theo chiều ngang, có một đoạn dây ngắn ở hai bên. Vẽ với tốc độ bình thường. Đừng cố ý dừng lại.",
+      "Hình mẫu ở góc cho biết ký hiệu trông như thế nào. Nếu bạn đã biết ký hiệu, bạn có thể ẩn hình mẫu.",
+      "\"Hoàn tác\" xoá nét vẽ cuối cùng. \"Tiếp\" lưu hình vẽ.",
+      "Bạn có thể dừng bất cứ lúc nào. Để tiếp tục, hãy mở lại trang trên cùng thiết bị và cùng trình duyệt (không dùng chế độ riêng tư hoặc ẩn danh).",
+      "Cuối mỗi lần vẽ, bấm \"Tải xuống\" và tải tệp lên thư mục Google Drive của nhóm. Trên iPhone hoặc iPad, đừng để trang không dùng quá 7 ngày.",
+    ],
+    example_hide: "Ẩn mẫu",
+    example_show: "Hiện mẫu",
     devices: {
       tablet_pen: "Máy tính bảng + bút",
       tablet_finger: "Máy tính bảng + ngón tay",
@@ -122,6 +139,20 @@ const TEXT = {
     reload: "Reload page",
     close: "Close",
     lang_button: "VI",
+    guide: "Guide",
+    guide_title: "Guide",
+    guide_ok: "OK",
+    guide_items: [
+      "You draw 11 circuit symbols for our project. One round takes about 30 minutes (165 drawings).",
+      "Choose your code (the team lead sent it to you) and the device you are using.",
+      "Draw the symbol shown, horizontally, with a short wire on both sides. Draw at your normal speed. Do not pause on purpose.",
+      "The example picture in the corner shows the symbol. If you know the symbol, you can hide the example.",
+      "\"Undo\" removes your last line. \"Next\" saves the drawing.",
+      "You can stop at any time. To continue, open the page again on the same device and the same browser (not private or incognito mode).",
+      "At the end of each sitting, press \"Download\" and upload the file to the team's Google Drive folder. On iPhone or iPad, do not leave the page unused for more than 7 days.",
+    ],
+    example_hide: "Hide example",
+    example_show: "Show example",
     devices: {
       tablet_pen: "Tablet + pen",
       tablet_finger: "Tablet + finger",
@@ -166,9 +197,10 @@ let penSeen = false;             // tablet + pen: a pen stroke has started in th
 let ignoredTouchRun = 0;         // tablet + pen: ignored touches in a row (reset by a pen stroke)
 let touchWarningPending = false; // show the "touch ignored" message when that touch ends
 
-// Is the example picture on screen? There are no example pictures yet, so it is always false.
-// The piece with the example pictures and the show/hide button will set this value.
-let exampleShown = false;
+// Example picture: the show/hide choice is remembered on the device (shown by default).
+let exampleVisible = true;
+try { exampleVisible = localStorage.getItem("exampleVisible") !== "false"; } catch (e) { /* keep default */ }
+const exampleOk = {};   // label -> true when its picture has loaded (a picture that fails is never shown)
 
 // ---------------------------------------------------------------- small helpers
 
@@ -353,6 +385,8 @@ function applyLanguage() {
   fillSelects();
   updateStorageNotes();
   if (!$("draw-screen").classList.contains("hidden")) showLabel();
+  renderGuide();
+  updateExample();
   updateButtons();
 }
 
@@ -411,6 +445,71 @@ function showLabel() {
   $("symbol-label").textContent = t.symbols[session.order[i]];
   $("progress").textContent = (i + 1) + " / " + TOTAL;
 }
+
+// ---------------------------------------------------------------- example picture
+
+// Load all pictures once at the start, so they appear at once and the page knows which ones work.
+function preloadExamples() {
+  SYMBOLS.forEach((label) => {
+    const img = new Image();
+    img.onload = () => { exampleOk[label] = true; updateExample(); };
+    img.onerror = () => { exampleOk[label] = false; updateExample(); };
+    img.src = EXAMPLE_DIR + label + ".png";
+  });
+}
+
+// Is the example picture of the current symbol on the screen right now?
+function exampleOnScreen() {
+  const label = currentLabel();
+  return !!label && exampleOk[label] === true && exampleVisible &&
+    !$("draw-screen").classList.contains("hidden");
+}
+
+function currentLabel() {
+  if (!current || session.drawings.length >= TOTAL) return null;
+  return session.order[session.drawings.length];
+}
+
+// Show the example of the current symbol, or the collapsed box, or nothing.
+// It also records whether the picture was on the screen during this drawing (example_shown).
+function updateExample() {
+  const label = currentLabel();
+  const box = $("example-box");
+  const t = TEXT[lang];
+  if (!label || !exampleOk[label] || $("draw-screen").classList.contains("hidden")) {
+    box.classList.add("hidden");
+    return;
+  }
+  const src = EXAMPLE_DIR + label + ".png";
+  if ($("example-img").getAttribute("src") !== src) $("example-img").setAttribute("src", src);
+  box.classList.remove("hidden");
+  box.classList.toggle("collapsed", !exampleVisible);
+  $("example-btn").textContent = exampleVisible ? t.example_hide : t.example_show;
+  // example_shown: true if the picture was on the screen at any moment while the person drew,
+  // that is from the first stroke of this drawing until Next (see also onPointerDown).
+  if (exampleVisible && current.t0 !== null) current.exampleSeen = true;
+}
+
+function onToggleExample() {
+  exampleVisible = !exampleVisible;
+  try { localStorage.setItem("exampleVisible", String(exampleVisible)); } catch (e) { /* ignore */ }
+  updateExample();
+}
+
+// ---------------------------------------------------------------- guide
+
+function renderGuide() {
+  const list = $("guide-list");
+  list.innerHTML = "";
+  TEXT[lang].guide_items.forEach((text) => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    list.appendChild(li);
+  });
+}
+
+function openGuide() { $("guide-screen").classList.remove("hidden"); }
+function closeGuide() { $("guide-screen").classList.add("hidden"); }
 
 // ---------------------------------------------------------------- device check
 
@@ -513,10 +612,13 @@ function randomPageStyle() {
 function newDrawing(keepStyle) {
   const size = setupCanvas();
   const pageStyle = keepStyle && current ? current.pageStyle : randomPageStyle();
+  const exampleSeen = keepStyle && current ? current.exampleSeen : false;
   setPageStyle(pageStyle);
-  current = { startedAt: null, t0: null, canvas: size, pageStyle: pageStyle, strokes: [], undoCount: 0 };
+  current = { startedAt: null, t0: null, canvas: size, pageStyle: pageStyle, strokes: [], undoCount: 0,
+    exampleSeen: exampleSeen };
   activeStroke = null;
   activePointerId = null;
+  updateExample();
   updateButtons();
 }
 
@@ -582,6 +684,8 @@ function onPointerDown(e) {
   }
   activePointerId = e.pointerId;
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* not critical */ }
+
+  if (exampleOnScreen()) current.exampleSeen = true;   // example_shown (requirements, section 5)
 
   activeStroke = { device: deviceFromPointerType(e.pointerType), points: [pointFromEvent(e)] };
   current.strokes.push(activeStroke);
@@ -656,7 +760,7 @@ function saveDrawing() {
     started_at: current.startedAt,
     canvas: current.canvas,
     page_style: current.pageStyle,
-    example_shown: exampleShown,
+    example_shown: current.exampleSeen,
     undo_count: current.undoCount,
     strokes: current.strokes,
     image: renderImage(current.canvas, current.strokes),
@@ -689,6 +793,7 @@ function onNext() {
   } else {
     current = null;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    updateExample();
     updateButtons();
   }
 }
@@ -788,8 +893,11 @@ async function onStart() {
   } else {                                  // this round is already finished: only Download is possible
     current = null;
     setPageStyle("blank");
+    updateExample();
     updateButtons();
   }
+  // Short guide before the first drawing of a new round 1 session (not when continuing).
+  if (!saved && round === 1) openGuide();
 }
 
 // Warn before leaving while a save is not finished, or when saving on the device does not work.
@@ -813,6 +921,11 @@ $("start-btn").addEventListener("click", onStart);
 $("next-btn").addEventListener("click", onNext);
 $("undo-btn").addEventListener("click", onUndo);
 $("download-btn").addEventListener("click", onDownload);
+$("example-btn").addEventListener("click", onToggleExample);
+$("guide-btn").addEventListener("click", openGuide);
+$("guide-btn-start").addEventListener("click", openGuide);
+$("guide-ok").addEventListener("click", closeGuide);
 
+preloadExamples();
 applyLanguage();
 initStorage();
