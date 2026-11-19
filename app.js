@@ -39,7 +39,7 @@ const TEXT = {
     choose: "— chọn —",
     start: "Bắt đầu",
     draw_this: "Hãy vẽ:",
-    clear: "Xóa",
+    undo: "Hoàn tác",
     download: "Tải xuống",
     next: "Tiếp",
     done: "Xong! Hãy tải xuống tệp.",
@@ -76,7 +76,7 @@ const TEXT = {
     choose: "— choose —",
     start: "Start",
     draw_this: "Draw:",
-    clear: "Clear",
+    undo: "Undo",
     download: "Download",
     next: "Next",
     done: "Done! Please download the file.",
@@ -222,11 +222,16 @@ function updateNotice() {
   }
 }
 
-// Called for every new stroke: does its device fit the chosen device pair?
-function checkDevice(strokeDevice) {
+// Does this stroke device NOT fit the chosen device pair?
+function deviceMismatch(strokeDevice) {
   const fits = DEVICE_FITS[strokeDevice];
-  if (!fits) return;                       // unknown device: no notice
-  if (!fits.includes(session.devicePair)) {
+  if (!fits) return false;                 // unknown device: no notice
+  return !fits.includes(session.devicePair);
+}
+
+// Called for every new stroke.
+function checkDevice(strokeDevice) {
+  if (deviceMismatch(strokeDevice)) {
     noticeShown = true;
     updateNotice();
   }
@@ -236,7 +241,7 @@ function updateButtons() {
   const finished = session.drawings.length >= TOTAL;
   const hasInk = !!current && current.strokes.length > 0;
   $("next-btn").disabled = finished || !hasInk;
-  $("clear-btn").disabled = finished || !hasInk;
+  $("undo-btn").disabled = finished || !hasInk;
   $("download-btn").disabled = session.drawings.length === 0;
 }
 
@@ -268,7 +273,7 @@ function setupCanvas() {
 
 function newDrawing() {
   const size = setupCanvas();
-  current = { startedAt: null, t0: null, canvas: size, strokes: [] };
+  current = { startedAt: null, t0: null, canvas: size, strokes: [], undoCount: 0 };
   activeStroke = null;
   activePointerId = null;
   noticeShown = false;
@@ -365,6 +370,7 @@ function saveDrawing() {
     label: session.order[i],
     started_at: current.startedAt,
     canvas: current.canvas,
+    undo_count: current.undoCount,
     strokes: current.strokes,
     // Later pieces add: page_style, example_shown, image.
   });
@@ -385,8 +391,34 @@ function onNext() {
   }
 }
 
-function onClear() {
-  if (current) newDrawing();
+// Draw all remaining strokes again (used after Undo).
+function redrawAll() {
+  ctx.clearRect(0, 0, current.canvas.width, current.canvas.height);
+  for (const s of current.strokes) {
+    const pts = s.points;
+    ctx.beginPath();
+    ctx.arc(pts[0][0], pts[0][1], ctx.lineWidth / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+  }
+}
+
+// Undo removes the last stroke. It is not saved. Times of the other strokes stay as recorded.
+function onUndo() {
+  if (!current || activePointerId !== null || current.strokes.length === 0) return;
+  current.strokes.pop();
+  current.undoCount += 1;
+  if (current.strokes.length === 0) {      // nothing left: time starts again at the next first touch
+    current.t0 = null;
+    current.startedAt = null;
+  }
+  redrawAll();
+  noticeShown = current.strokes.some((s) => deviceMismatch(s.device));
+  updateNotice();
+  updateButtons();
 }
 
 function onDownload() {
@@ -441,7 +473,7 @@ $("person-select").addEventListener("change", updateStartButton);
 $("device-select").addEventListener("change", updateStartButton);
 $("start-btn").addEventListener("click", onStart);
 $("next-btn").addEventListener("click", onNext);
-$("clear-btn").addEventListener("click", onClear);
+$("undo-btn").addEventListener("click", onUndo);
 $("download-btn").addEventListener("click", onDownload);
 
 applyLanguage();
