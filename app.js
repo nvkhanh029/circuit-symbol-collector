@@ -1,5 +1,5 @@
 // Circuit Symbol Collector - pieces 1 and 2: start screen, canvas that records strokes,
-// random page style, rendered picture, example_shown.
+// random page style, rendered picture, example_shown, palm rejection (tablet + pen).
 // Not done yet (later pieces): example pictures, guide, saving on the device (resume),
 // progress to Google Sheet, scene mode.
 
@@ -36,6 +36,14 @@ const DEVICE_FITS = {
 // Keep it false until all 5 device pairs are tested on real devices (a device may report its input wrongly).
 const DEVICE_CHECK_BLOCKS = false;
 
+// Palm rejection (tablet + pen only): after the first pen stroke, finger touches are ignored.
+// If this many ignored touches come in a row (no pen stroke between them), the person sees a message,
+// because they may think drawing with a finger is fine. Value to be tuned on the real tablet.
+const IGNORED_TOUCH_LIMIT = 2;
+
+// The button of the device message ignores taps for this long after the message appears.
+const MODAL_BUTTON_DELAY_MS = 500;
+
 // Round 2 stays closed until the team lead opens it. For now it is a fixed switch;
 // later it will be read from the Google Sheet (requirements, section 3).
 const ROUND2_OPEN = false;
@@ -60,6 +68,8 @@ const TEXT = {
     mismatch_block: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Hãy tải lại trang và chọn lại thiết bị.",
     mismatch_reload: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy tải lại trang và chọn lại.",
     mismatch_team: "Thiết bị vẽ không khớp với lựa chọn của bạn ({device}). Nếu bạn chọn nhầm, hãy báo cho trưởng nhóm.",
+    touch_ignored_reload: "Đang ở chế độ bút: nét vẽ bằng ngón tay bị bỏ qua. Hãy dùng bút, hoặc tải lại trang và chọn lại thiết bị.",
+    touch_ignored_team: "Đang ở chế độ bút: nét vẽ bằng ngón tay bị bỏ qua. Hãy dùng bút. Nếu bạn chọn nhầm thiết bị, hãy báo cho trưởng nhóm.",
     reload: "Tải lại trang",
     close: "Đóng",
     lang_button: "EN",
@@ -101,6 +111,8 @@ const TEXT = {
     mismatch_block: "The drawing device does not match your choice ({device}). Please reload the page and choose your device again.",
     mismatch_reload: "The drawing device does not match your choice ({device}). If you chose the wrong one, reload the page and choose again.",
     mismatch_team: "The drawing device does not match your choice ({device}). If you chose the wrong one, tell the team lead.",
+    touch_ignored_reload: "Pen mode: finger strokes are ignored. Please use your pen, or reload the page and choose your device again.",
+    touch_ignored_team: "Pen mode: finger strokes are ignored. Please use your pen. If you chose the wrong device, tell the team lead.",
     reload: "Reload page",
     close: "Close",
     lang_button: "VI",
@@ -144,6 +156,9 @@ let current = null; // the drawing in progress: { startedAt, t0, canvas, strokes
 let activeStroke = null;     // the stroke being drawn right now
 let activePointerId = null;  // only one pointer is followed at a time
 let warnedThisSession = false;   // the closable device warning is shown at most once per session
+let penSeen = false;             // tablet + pen: a pen stroke has started in this session
+let ignoredTouchRun = 0;         // tablet + pen: ignored touches in a row (reset by a pen stroke)
+let touchWarningPending = false; // show the "touch ignored" message when that touch ends
 
 // Is the example picture on screen? There are no example pictures yet, so it is always false.
 // The piece with the example pictures and the show/hide button will set this value.
@@ -252,7 +267,11 @@ function showDeviceModal(textKey, canClose) {
   $("modal-text").textContent = t[textKey].replace("{device}", t.devices[session.devicePair]);
   const btn = $("modal-btn");
   btn.textContent = canClose ? t.close : t.reload;
-  btn.onclick = canClose ? hideDeviceModal : () => location.reload();
+  // The message often appears when a finger lifts. The tap that follows must not press the button
+  // by accident, so the button works only after a short moment.
+  const shownAt = performance.now();
+  const action = canClose ? hideDeviceModal : () => location.reload();
+  btn.onclick = () => { if (performance.now() - shownAt >= MODAL_BUTTON_DELAY_MS) action(); };
   $("device-modal").classList.remove("hidden");
 }
 
@@ -349,10 +368,51 @@ function pointFromEvent(e) {
   return [Math.round(x * 10) / 10, Math.round(y * 10) / 10, t];
 }
 
+// Remove the stroke that is being drawn right now (used when a pen replaces a palm touch).
+function dropActiveStroke() {
+  const i = current.strokes.indexOf(activeStroke);
+  if (i >= 0) current.strokes.splice(i, 1);
+  if (current.strokes.length === 0) { current.t0 = null; current.startedAt = null; }
+  activeStroke = null;
+  activePointerId = null;
+  redrawAll();
+  updateButtons();
+}
+
 function onPointerDown(e) {
-  if (!current || activePointerId !== null) return;     // one pointer at a time
+  if (!current) return;
   if (e.pointerType === "mouse" && e.button !== 0) return;
   if (session.drawings.length >= TOTAL) return;
+
+  const penMode = session.devicePair === "tablet_pen";
+
+  if (activePointerId !== null) {
+    // Pen priority (tablet + pen): a pen replaces a touch stroke that is still active (a palm).
+    if (penMode && e.pointerType === "pen" && activeStroke && activeStroke.device === "finger") {
+      dropActiveStroke();
+    } else {
+      return;                                           // one pointer at a time
+    }
+  }
+
+  if (penMode) {
+    if (e.pointerType === "pen") {
+      penSeen = true;
+      ignoredTouchRun = 0;
+    } else if (e.pointerType === "touch" && penSeen) {
+      // Palm rejection: touches are ignored after the first pen stroke.
+      e.preventDefault();
+      if (e.isPrimary) {
+        ignoredTouchRun += 1;
+        if (ignoredTouchRun >= IGNORED_TOUCH_LIMIT) {
+          ignoredTouchRun = 0;
+          touchWarningPending = true;                    // shown when this touch ends
+        }
+      }
+      return;
+    }
+  }
+
   e.preventDefault();
 
   if (current.t0 === null) {
@@ -386,6 +446,10 @@ function onPointerMove(e) {
 }
 
 function onPointerEnd(e) {
+  if (touchWarningPending && e.pointerType === "touch" && e.isPrimary) {
+    touchWarningPending = false;
+    showDeviceModal(session.drawings.length === 0 ? "touch_ignored_reload" : "touch_ignored_team", true);
+  }
   if (e.pointerId !== activePointerId) return;
   if (e.type === "pointerup" && activeStroke) {
     const pts = activeStroke.points;
@@ -529,6 +593,9 @@ function onStart() {
   );
   session.drawings = [];
   warnedThisSession = false;
+  penSeen = false;
+  ignoredTouchRun = 0;
+  touchWarningPending = false;
   hideDeviceModal();
   $("start-screen").classList.add("hidden");
   $("draw-screen").classList.remove("hidden");
