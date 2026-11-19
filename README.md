@@ -6,7 +6,7 @@ This repository holds **only the page**. It never contains collected data, real 
 
 ## Status
 
-Work in progress. The page is not built yet.
+Work in progress. Main mode works (drawing, saving on the device, example pictures, guide, progress to the Google Sheet). Not built yet: the round 2 switch and scene mode.
 
 ## Hosting
 
